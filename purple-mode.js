@@ -16,15 +16,6 @@
     "https://www.roblox.com/",
     "https://discord.com/app",
     "https://steamcommunity.com/",
-    "https://github.com/",
-    "https://x.com/",
-    "https://www.instagram.com/",
-    "https://www.netflix.com/",
-    "https://open.spotify.com/",
-    "https://www.twitch.tv/",
-    "https://www.reddit.com/",
-    "https://www.amazon.com/",
-    "https://www.paypal.com/",
   ];
 
   /* ---- cookie access ---- */
